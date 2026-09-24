@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>photoswipe</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    background: #111; color: #eee; font: 15px -apple-system, sans-serif;
+    user-select: none; overflow: hidden;
+  }
+  header { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
+  .tab { background: none; border: 1px solid #333; color: #aaa; padding: 6px 12px; border-radius: 999px; cursor: pointer; }
+  .tab.active { background: #eee; color: #111; border-color: #eee; }
+  .spacer { flex: 1; }
+  .num { font-family: ui-monospace, monospace; }
+  #push { background: #c33; color: white; border: none; padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+  #push:disabled { background: #333; color: #777; cursor: default; }
+  main { flex: 1; display: flex; align-items: center; justify-content: center; position: relative; min-height: 0; }
+  #card { max-width: 90vw; max-height: 100%; display: flex; flex-direction: column; align-items: center; touch-action: none; cursor: grab; }
+  #card img, #card video { max-width: 90vw; max-height: calc(100vh - 190px); border-radius: 12px; display: block; }
+  #stamp { position: absolute; top: 24px; z-index: 1; font-size: 28px; font-weight: 700; opacity: 0; padding: 4px 14px; border: 3px solid; border-radius: 8px; }
+  #info { color: #999; padding: 8px; text-align: center; }
+  footer { display: flex; justify-content: center; gap: 16px; padding: 12px 16px 20px; }
+  footer button { font-size: 16px; padding: 10px 22px; border-radius: 999px; border: 1px solid #444; background: #1c1c1c; color: #eee; cursor: pointer; }
+  .hint { color: #666; font-size: 13px; align-self: center; }
+  #empty { color: #777; font-size: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <div id="tabs"></div>
+  <div class="spacer"></div>
+  <span>freed <span class="num" id="freed">0.0 GB</span></span>
+  <button id="push">Send to album</button>
+</header>
+<main>
+  <div id="stamp"></div>
+  <div id="card"></div>
+</main>
+<div id="info"></div>
+<footer>
+  <button id="btn-delete">✕ Delete</button>
+  <button id="btn-undo">↶ Undo</button>
+  <button id="btn-keep">Keep ✓</button>
+  <span class="hint">← delete · → keep · Z undo</span>
+</footer>
+
+<script>
+const DECK_NAMES = { iphone: "Gone from iPhone", videos: "Videos", rest: "Everything else" };
+
+let decks = {};
+let choices = {};
+let pushed = [];
+let current = "iphone";
+let history = [];   // uuids in the order they were decided, for undo
+
+async function start() {
+  const res = await fetch("/api/state");
+  const state = await res.json();
+  decks = state.decks;
+  choices = state.progress.choices;
+  pushed = state.progress.pushed;
+  // start on the first deck that still has cards
+  for (const name of Object.keys(DECK_NAMES)) {
+    if (remaining(name).length > 0) { current = name; break; }
+  }
+  render();
+}
+
+function remaining(deckName) {
+  return decks[deckName].filter(item => !(item.uuid in choices));
+}
+
+function findItem(uuid) {
+  for (const name of Object.keys(decks)) {
+    const item = decks[name].find(i => i.uuid === uuid);
+    if (item) return item;
+  }
+}
+
+function gb(bytes) {
+  if (bytes < 1e9) return Math.round(bytes / 1e6) + " MB";
+  return (bytes / 1e9).toFixed(1) + " GB";
+}
+
+function render() {
+  // tabs
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = "";
+  for (const name of Object.keys(DECK_NAMES)) {
+    const button = document.createElement("button");
+    button.className = "tab" + (name === current ? " active" : "");
+    button.textContent = `${DECK_NAMES[name]} ${remaining(name).length}`;
+    button.onclick = () => { current = name; render(); };
+    tabs.appendChild(button);
+  }
+
+  // freed space and the push button
+  let freed = 0;
+  let toPush = 0;
+  for (const [uuid, choice] of Object.entries(choices)) {
+    if (choice !== "delete") continue;
+    const item = findItem(uuid);
+    if (item) freed += item.size;
+    if (!pushed.includes(uuid)) toPush += 1;
+  }
+  document.getElementById("freed").textContent = gb(freed);
+  const push = document.getElementById("push");
+  push.textContent = `Send ${toPush} to "To delete"`;
+  push.disabled = toPush === 0;
+
+  // the card
+  const card = document.getElementById("card");
+  const info = document.getElementById("info");
+  card.innerHTML = "";
+  card.style.transform = "";
+  const left = remaining(current);
+  if (left.length === 0) {
+    card.innerHTML = `<div id="empty">This deck is done.</div>`;
+    info.textContent = "";
+    return;
+  }
+  const item = left[0];
+  if (item.video) {
+    const video = document.createElement("video");
+    video.src = "/media/" + item.uuid;
+    video.controls = true;
+    video.autoplay = true;
+    video.muted = true;
+    video.loop = true;
+    card.appendChild(video);
+  } else {
+    const img = document.createElement("img");
+    img.src = "/media/" + item.uuid;
+    img.draggable = false;
+    card.appendChild(img);
+  }
+  info.innerHTML = `${item.date} · <span class="num">${gb(item.size)}</span> · ${item.name} · ` +
+                   `<span class="num">${left.length}</span> left`;
+
+  // load the next photo in the background so it appears instantly
+  if (left.length > 1 && !left[1].video) {
+    new Image().src = "/media/" + left[1].uuid;
+  }
+}
+
+async function decide(choice) {
+  const left = remaining(current);
+  if (left.length === 0) return;
+  const uuid = left[0].uuid;
+  choices[uuid] = choice;
+  history.push(uuid);
+  render();
+  await fetch("/api/decide", { method: "POST", body: JSON.stringify({ uuid, choice }) });
+}
+
+async function undo() {
+  const uuid = history.pop();
+  if (!uuid) return;
+  const res = await fetch("/api/decide", { method: "POST", body: JSON.stringify({ uuid, choice: "undo" }) });
+  if (!res.ok) {
+    alert("That one is already in the \"To delete\" album. Remove it from the album in Photos.");
+    return;
+  }
+  delete choices[uuid];
+  render();
+}
+
+async function pushToAlbum() {
+  const push = document.getElementById("push");
+  push.disabled = true;
+  push.textContent = "Sending...";
+  const res = await fetch("/api/push", { method: "POST" });
+  const data = await res.json();
+  const state = await (await fetch("/api/state")).json();
+  pushed = state.progress.pushed;
+  history = [];   // pushed items can no longer be undone here
+  render();
+  alert(`${data.pushed} items added to "To delete" in Photos.`);
+}
+
+document.getElementById("btn-delete").onclick = () => decide("delete");
+document.getElementById("btn-keep").onclick = () => decide("keep");
+document.getElementById("btn-undo").onclick = undo;
+document.getElementById("push").onclick = pushToAlbum;
+
+document.addEventListener("keydown", event => {
+  if (event.key === "ArrowLeft") decide("delete");
+  if (event.key === "ArrowRight") decide("keep");
+  if (event.key === "z" || event.key === "Backspace") undo();
+});
+
+// drag the card left or right, like swiping on the phone
+const card = document.getElementById("card");
+const stamp = document.getElementById("stamp");
+let dragStartX = null;
+
+card.addEventListener("pointerdown", event => {
+  if (event.target.tagName === "VIDEO" && event.offsetY > event.target.clientHeight - 50) return; // video controls
+  dragStartX = event.clientX;
+  card.setPointerCapture(event.pointerId);
+});
+
+card.addEventListener("pointermove", event => {
+  if (dragStartX === null) return;
+  const dx = event.clientX - dragStartX;
+  card.style.transform = `translateX(${dx}px) rotate(${dx / 20}deg)`;
+  stamp.style.opacity = Math.min(Math.abs(dx) / 120, 1);
+  stamp.textContent = dx < 0 ? "DELETE" : "KEEP";
+  stamp.style.color = stamp.style.borderColor = dx < 0 ? "#e55" : "#5c5";
+});
+
+card.addEventListener("pointerup", event => {
+  if (dragStartX === null) return;
+  const dx = event.clientX - dragStartX;
+  dragStartX = null;
+  stamp.style.opacity = 0;
+  if (dx < -120) decide("delete");
+  else if (dx > 120) decide("keep");
+  else card.style.transform = "";
+});
+
+start();
+</script>
+</body>
+</html>
