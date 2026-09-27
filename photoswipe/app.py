@@ -144,8 +144,13 @@ class Handler(BaseHTTPRequestHandler):
                 if choice == "delete" and uuid not in progress["pushed"]:
                     to_push.append(uuid)
             if to_push:
-                album = PhotosAlbum(ALBUM_NAME)
-                album.extend([by_uuid[uuid] for uuid in to_push])
+                try:
+                    album = PhotosAlbum(ALBUM_NAME)
+                    album.extend([by_uuid[uuid] for uuid in to_push])
+                except Exception as error:
+                    print(f"push failed: {error!r}")
+                    self.send_json({"error": repr(error)}, 500)
+                    return
                 progress["pushed"].extend(to_push)
                 save_progress()
             self.send_json({"pushed": len(to_push)})

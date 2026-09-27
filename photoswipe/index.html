@@ -174,6 +174,11 @@ async function pushToAlbum() {
   push.textContent = "Sending...";
   const res = await fetch("/api/push", { method: "POST" });
   const data = await res.json();
+  if (!res.ok) {
+    render();
+    alert(`Sending failed: ${data.error}`);
+    return;
+  }
   const state = await (await fetch("/api/state")).json();
   pushed = state.progress.pushed;
   history = [];   // pushed items can no longer be undone here
